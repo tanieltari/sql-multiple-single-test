@@ -1,10 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Data;
-using System.Diagnostics;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using WebApplication.Models;
 
@@ -17,18 +16,23 @@ namespace WebApplication.Controllers
     public class SemesterController : ControllerBase
     {
         private readonly string _connectionString;
+        private readonly IMemoryCache _cache;
 
-        public SemesterController(IConfiguration configuration)
+        public SemesterController(IConfiguration configuration, IMemoryCache memoryCache)
         {
             _connectionString = configuration.GetConnectionString("MSSQL");
+            _cache = memoryCache;
         }
 
         [HttpGet("{semesterId:guid}/Multiple")]
         [ProducesResponseType(typeof(Semester), 200)]
         public async Task<IActionResult> GetSemesterWithMultipleQueries(Guid semesterId)
         {
-            var watch = new Stopwatch();
-            watch.Start();
+            if (_cache.TryGetValue($"{nameof(Semester)}_{semesterId:N}", out Semester cacheEntry))
+            {
+                return Ok(cacheEntry);
+            }
+
             var semester = new Semester();
             await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -66,8 +70,7 @@ namespace WebApplication.Controllers
                 }
             }
 
-            watch.Stop();
-            Console.WriteLine($"Elapsed time {watch.ElapsedTicks} ticks");
+            _cache.Set($"{nameof(Semester)}_{semesterId:N}", semester, TimeSpan.FromMinutes(2));
             return Ok(semester);
         }
 
@@ -75,8 +78,11 @@ namespace WebApplication.Controllers
         [ProducesResponseType(typeof(Semester), 200)]
         public async Task<IActionResult> GetSemesterWithSingleQuery(Guid semesterId)
         {
-            var watch = new Stopwatch();
-            watch.Start();
+            if (_cache.TryGetValue($"{nameof(Semester)}_{semesterId:N}", out Semester cacheEntry))
+            {
+                return Ok(cacheEntry);
+            }
+
             Semester? semester = null;
             await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -105,10 +111,13 @@ namespace WebApplication.Controllers
                 }
             }
 
-            watch.Stop();
-            Console.WriteLine($"Elapsed time {watch.ElapsedTicks} ticks");
-            return Ok(semester ??
-                      throw new ArgumentException($"No semester in database with id {semesterId.ToString()}"));
+            if (semester == null)
+            {
+                throw new ArgumentException($"No semester in database with id {semesterId.ToString()}");
+            }
+
+            _cache.Set($"{nameof(Semester)}_{semesterId:N}", semester, TimeSpan.FromMinutes(2));
+            return Ok(semester);
         }
     }
 }
